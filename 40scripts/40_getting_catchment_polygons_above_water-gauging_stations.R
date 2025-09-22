@@ -1,5 +1,5 @@
 
-# Getting catchment polygons above water-gauging stations in Czech --------
+# Getting catchment polygons above water-gauging stations in Czechia ------
 
 # in hydrology we often need to work with catchments above water-gauging stations
 # the reason may be to compare the discharge time series with the series obtained from climatological measurements (e.g. in the form of a grid)
@@ -10,8 +10,7 @@
 # load necessary packages
 xfun::pkg_attach2("tidyverse",
                   "sf",
-                  "arcgislayers", 
-                  "multidplyr") # for modern parallelization using tidyverse verbs and tables of the tibble class
+                  "arcgislayers")
 
 # get the smallest catchment polygons based on https://open-data-chmi.hub.arcgis.com/datasets/chmi::rozvodnice-povod%C3%AD-4-%C5%99%C3%A1du-roz%C5%A1%C3%AD%C5%99en%C3%A9/about
 # at the end, we edit the character strings to correctly contain the NA characters representing missing values (it can also be useful for other work)
@@ -31,52 +30,53 @@ stations <- catch |>
          chp_14_s,
          chp_14_s_u)
 
-# prepare for the parallelized processing
+# prepare for the parallelized processing by means of the function in_parallel() - see the documentation to purrr functions
 catch2 <- catch |> 
   left_join(stations,
             join_by(between(chp_14_s, # we make use of the new function join_by(), which allows for other relationships between keys than equality
                             chp_14_s_u,
                             chp_14_s))) |> 
   filter(!is.na(dbcn.y)) |> 
-  group_by(dbcn.y) # grouping is important for partitioning
+  nest(rest = -dbcn.y)
 
-# further part is inspired by the vignette at https://cran.rstudio.com/web/packages/multidplyr/vignettes/multidplyr.html
-cluster <- new_cluster(parallelly::availableCores() - 1) # as recommended in the vignette; performance depends on the specific machine
+# before running, we need to call so-called daemons whose number is dependent on the machine at hand
+# wee need some function of the mirai package
+mirai::daemons(0) # this is done only if we needed to switch to the sequential process
 
-# partition the sf collection
-catch2 <- catch2 |> 
-  partition(cluster)
+mirai::daemons(parallelly::availableCores() - 1) # to have the script general, we are looking at the number of available cores, while one core should be left for working on other things
 
-# show slaves that we are using the functions of the sf package
-cluster_library(cluster,
-                "sf")
-
-# run the process of unifying polygons by groups defined by stations
+# run the process of unifying polygons by rows representing the stations
 # we measure the time spent
 # at the end, we let play a sound to be announced everything is done:-)
-tictoc::tic(); catch2 <- catch2 |> 
-  summarize(geoms = st_union(geometry)) |> # exactly this must be run in parallel
-  collect() |> 
-  st_sf() |> 
-  rename(id = dbcn.y); tictoc::toc(); beepr::beep(3)
+# according to the documentation, it is necessary to ensure that the process will be run in paralell
+mirai::require_daemons()
 
-# now, we can remove the cluster
-rm(cluster)
+tictoc::tic(); catch3 <- catch2 |> 
+  mutate(rest = map(rest,
+                    in_parallel(\(x) {
+                      xfun::pkg_attach2("tidyverse",
+                                        "sf")
+                      st_union(x)
+                    }))) |> # unknown objects in other than the main process must be introduced after the function definition
+  unnest(rest) |> 
+  st_sf() |> # because the result of the unnest() function is a tibble
+  st_set_geometry("geoms") |> # rename the geometry
+  rename(dbcn = dbcn.y); tictoc::toc(); beepr::beep(3)
 
 # compute the areas of obtained catchments
-catch2 <- catch2 |> 
+catch3 <- catch3 |> 
   mutate(a = st_area(st_transform(geoms,
                                   3035)) |> 
            units::set_units("km2") |> 
            round(2)) |> # at the CHMI, it is customary to round km2 to two decimal places
-  arrange(desc(a))
+  arrange(desc(a)) # for plotting, it is recommended that we have the biggest polygons at the bottom (i.e. the rows are arranged in the descending order)
 
 # get rid of the catchments with zero area
-catch2 <- catch2 |> 
+catch3 <- catch3 |> 
   filter(a > units::set_units(0,
                               "km2"))
 
 # resulting layer may be saved to RDS to allow further work in R
-write_rds(catch2,
+write_rds(catch3,
           "results/catchments_above_738_stations.rds",
           compress = "gz")
