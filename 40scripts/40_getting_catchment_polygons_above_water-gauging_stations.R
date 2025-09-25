@@ -61,7 +61,7 @@ tictoc::tic(); catch3 <- catch2 |>
   unnest(rest) |> 
   st_sf() |> # because the result of the unnest() function is a tibble
   st_set_geometry("geoms") |> # rename the geometry
-  rename(dbcn = dbcn.y); tictoc::toc(); beepr::beep(3)
+  rename(id = dbcn.y); tictoc::toc(); beepr::beep(3)
 
 # compute the areas of obtained catchments
 catch3 <- catch3 |> 
